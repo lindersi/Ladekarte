@@ -9,6 +9,9 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Ladekarte CH">
     
+    <!-- Link zum Manifest für Android/PWA -->
+    <link rel="manifest" href="manifest.json">
+    
     <title>Smart Ladekarte Schweiz</title>
 
     <!-- Tailwind CSS für modernes Design -->
@@ -88,7 +91,9 @@
 
     <!-- Karten Container -->
     <div id="map-container">
+        <!-- WICHTIG: id="map-frame" hinzugefügt für den Zugriff via JS -->
         <iframe 
+            id="map-frame"
             src="https://map.geo.admin.ch/embed.html?topic=energie&lang=de&bgLayer=ch.swisstopo.pixelkarte-grau&layers=ch.bfe.ladestellen-elektromobilitaet&catalogNodes=2597,2602&mobile=true&zoom=2" 
             allow="geolocation" 
             title="Ladekarte Schweiz">
@@ -151,8 +156,15 @@
             </div>
         </div>
 
-        <!-- Floating Action Button (FAB) -->
-        <div class="flex justify-end mt-4 interactive">
+        <!-- Floating Action Buttons -->
+        <div class="flex flex-col items-end gap-3 mt-4 interactive">
+            
+            <!-- Neuer GPS Button -->
+            <button onclick="zoomToLocation()" id="gps-btn" class="bg-white hover:bg-gray-50 text-gray-700 p-3 rounded-full shadow-lg border border-gray-200 transition-transform transform active:scale-95 flex items-center justify-center" aria-label="Mein Standort">
+                <i data-lucide="crosshair" class="w-6 h-6"></i>
+            </button>
+
+            <!-- Chat Button -->
             <button onclick="toggleChat()" class="bg-blue-600 hover:bg-blue-700 text-white p-4 rounded-full shadow-lg transition-transform transform hover:scale-105 active:scale-95 flex items-center gap-2 group">
                 <i data-lucide="sparkles" class="w-6 h-6 animate-pulse"></i>
                 <span class="font-medium pr-1 group-hover:block hidden md:block">KI Assistent</span>
@@ -161,7 +173,7 @@
     </div>
 
     <script>
-        // Init Icons
+        // Icons initialisieren
         lucide.createIcons();
 
         // State
@@ -173,7 +185,80 @@
         const chatMessages = document.getElementById('chat-messages');
         const userInput = document.getElementById('user-input');
         const sendBtn = document.getElementById('send-btn');
+        const mapFrame = document.getElementById('map-frame');
 
+        // --- GPS Logic: Standort ermitteln und zoomen ---
+        function zoomToLocation() {
+            const btn = document.getElementById('gps-btn');
+            const originalIcon = `<i data-lucide="crosshair" class="w-6 h-6"></i>`;
+            
+            // Loading State anzeigen
+            btn.innerHTML = `<i data-lucide="loader-2" class="w-6 h-6 animate-spin text-blue-600"></i>`;
+            lucide.createIcons();
+
+            if (!navigator.geolocation) {
+                alert("Dein Browser unterstützt keine Ortung.");
+                btn.innerHTML = originalIcon;
+                lucide.createIcons();
+                return;
+            }
+
+            navigator.geolocation.getCurrentPosition(position => {
+                const lat = position.coords.latitude;
+                const lng = position.coords.longitude;
+                
+                // Umrechnung WGS84 -> LV95 (Schweizer Koordinaten)
+                const [E, N] = WGStoLV95(lat, lng);
+                
+                // Karte neu laden an Position mit Zoom 8 (Nah genug)
+                const currentSrc = new URL(mapFrame.src);
+                currentSrc.searchParams.set('E', E);
+                currentSrc.searchParams.set('N', N);
+                currentSrc.searchParams.set('zoom', '8');
+                
+                mapFrame.src = currentSrc.toString();
+                
+                // Reset Button
+                setTimeout(() => {
+                    btn.innerHTML = originalIcon;
+                    lucide.createIcons();
+                }, 1000);
+
+            }, error => {
+                console.error(error);
+                alert("Standort konnte nicht ermittelt werden. Bitte prüfe, ob du GPS erlaubt hast und die Seite über HTTPS aufrufst.");
+                btn.innerHTML = originalIcon;
+                lucide.createIcons();
+            });
+        }
+
+        // Hilfsfunktion: WGS84 zu LV95 Umrechnung (vereinfacht für Web-Mapping)
+        // Quelle: swisstopo Formeln
+        function WGStoLV95(lat, lng) {
+            // Hilfswerte
+            const phi = (lat * 3600 - 169028.66) / 10000;
+            const lam = (lng * 3600 - 26782.5) / 10000;
+
+            // Berechnung E (Ost)
+            const E = 2600072.37 
+                + 211455.93 * lam 
+                - 10938.51 * lam * phi 
+                - 0.36 * lam * phi * phi 
+                - 44.54 * lam * lam * lam;
+
+            // Berechnung N (Nord)
+            const N = 1200147.07 
+                + 308807.95 * phi 
+                + 3745.25 * lam * lam 
+                + 76.63 * phi * phi 
+                + 119.79 * phi * phi * phi 
+                - 194.56 * lam * lam * phi;
+
+            return [Math.round(E), Math.round(N)];
+        }
+        // --- Ende GPS Logic ---
+
+        // Chat UI Logic
         function toggleChat() {
             isChatOpen = !isChatOpen;
             if (isChatOpen) {
@@ -189,7 +274,6 @@
         function fillPrompt(text) {
             userInput.value = text;
             userInput.focus();
-            // Optional: Auto-Send wenn gewünscht, hier lassen wir den User editieren (z.B. Ort einfügen)
             if(!text.includes('[')) {
                 handleSend(new Event('submit'));
             }
@@ -200,12 +284,10 @@
             const text = userInput.value.trim();
             if (!text) return;
 
-            // User Message
             appendMessage('user', text);
             userInput.value = '';
             sendBtn.disabled = true;
 
-            // Loading Indicator
             const loadingId = appendMessage('bot', '<span class="animate-pulse">Denke nach... ✨</span>');
 
             try {
@@ -255,7 +337,6 @@
         }
 
         async function callGemini(userPrompt) {
-            // System Prompt: Kontext setzen
             const systemInstruction = `Du bist ein hilfreicher Assistent für Elektroauto-Fahrer in der Schweiz. 
             Du befindest dich in einer Web-App, die eine Karte aller Ladestationen anzeigt.
             
